@@ -16,6 +16,7 @@ use indexer_base::chunks::{Chunk, ChunkFactory};
 use indexer_base::config::IndexingConfig;
 use indexer_base::error_reporter::*;
 use indexer_base::utils;
+use indexer_base::progress::*;
 use serde::Serialize;
 use std::sync::mpsc;
 
@@ -708,6 +709,7 @@ pub fn create_index_and_mapping_dlt(
     config: IndexingConfig,
     source_file_size: Option<usize>,
     filter_conf: Option<filtering::DltFilterConfig>,
+    update_channel: Option<mpsc::Sender<IndexingProgress<Chunk>>>,
     shutdown_receiver: Option<mpsc::Receiver<()>>,
 ) -> Result<Vec<Chunk>, Error> {
     let initial_line_nr = match utils::next_line_nr(config.out_path) {
@@ -725,6 +727,7 @@ pub fn create_index_and_mapping_dlt(
         filter_conf,
         initial_line_nr,
         source_file_size,
+        update_channel,
         shutdown_receiver,
     )
 }
@@ -735,6 +738,7 @@ pub fn index_dlt_file(
     dlt_filter: Option<filtering::DltFilterConfig>,
     initial_line_nr: usize,
     source_file_size: Option<usize>,
+    update_channel: Option<mpsc::Sender<IndexingProgress<Chunk>>>,
     shutdown_receiver: Option<mpsc::Receiver<()>>,
 ) -> Result<Vec<Chunk>, Error> {
     let (out_file, current_out_file_size) =
