@@ -164,8 +164,6 @@ fn index_file(
     tx: Option<mpsc::Sender<IndexingProgress<Chunk>>>,
     shutdown_receiver: Option<mpsc::Receiver<()>>,
 ) {
-    info!("index_file in new thread");
-
     let source_file_size = Some(match config.in_file.metadata() {
         Ok(file_meta) => file_meta.len() as usize,
         Err(_) => {
@@ -281,6 +279,7 @@ fn index_dlt_file(mut cx: FunctionContext) -> JsResult<JsBoolean> {
         None,
         filter_conf,
         None,
+        None,
     ) {
         Err(why) => {
             error!("couldn't process: {}", why);
@@ -337,47 +336,45 @@ pub struct IndexingEventEmitter {
     shutdown_sender: mpsc::Sender<()>,
     task_thread: Option<std::thread::JoinHandle<()>>,
 }
+
+#[derive(Debug)]
+pub struct IndexingThreadConfig {
+    pub in_file: fs::File,
+    pub out_path: path::PathBuf,
+    pub append: bool,
+    pub tag: String,
+    pub timestamps: bool,
+}
 impl IndexingEventEmitter {
-    fn event_thread(
+    fn start_indexing_in_thread(
         self: &mut IndexingEventEmitter,
         shutdown_rx: mpsc::Receiver<()>,
         chunk_result_sender: mpsc::Sender<IndexingProgress<Chunk>>,
-        file: fs::File,
-        timestamps: bool,
-        tag: String,
         append: bool,
-        out_path: path::PathBuf,
         mapping_out_path: path::PathBuf,
         chunk_size: usize,
+        thread_conf: IndexingThreadConfig,
     ) {
         info!("call event_thread with chunk size: {}", chunk_size);
-        // let (chunk_result_sender, chunk_result_receiver) = mpsc::channel();
 
         // Spawn a thead to continue running after this method has returned.
         self.task_thread = Some(thread::spawn(move || {
             index_file(
                 IndexingConfig {
-                    tag: tag.as_str(),
+                    tag: thread_conf.tag.as_str(),
                     chunk_size,
-                    in_file: file,
-                    out_path: &out_path,
+                    in_file: thread_conf.in_file,
+                    out_path: &thread_conf.out_path,
                     append,
                     to_stdout: false,
                 },
-                timestamps,
+                thread_conf.timestamps,
                 mapping_out_path,
-                // None,
                 Some(chunk_result_sender.clone()),
                 Some(shutdown_rx),
             );
-            debug!("back after indexing finished!!!!!!!!",);
-            // match chunk_result_sender.send(IndexingProgress::Finished) {
-            //     Ok(()) => debug!("sent final finished successfully",),
-            //     Err(e) => debug!("error sending final finished: {}", e),
-            // }
+            debug!("back after indexing finished!",);
         }));
-
-        // chunk_result_receiver
     }
 }
 // Reading from a channel `Receiver` is a blocking operation. This struct
@@ -414,12 +411,7 @@ impl Task for EventEmitterTask {
                 };
                 Ok(Some(event))
             }
-            Err(RecvTimeoutError::Timeout) => {
-                // debug!(
-                //     "(libuv): Err(RecvTimeoutError::Timeout)",
-                // );
-                Ok(None)
-            }
+            Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => {
                 debug!("(libuv): Failed to receive event",);
                 Err("Failed to receive event".to_string())
@@ -516,15 +508,18 @@ declare_types! {
                 task_thread: None,
             };
             // Start work in a separate thread
-            emitter.event_thread(shutdown_receiver,
+            emitter.start_indexing_in_thread(shutdown_receiver,
                 chunk_result_sender,
-                f,
-                timestamps,
-                tag,
                 append,
-                out_path,
                 mapping_out_path,
                 chunk_size,
+                IndexingThreadConfig {
+                    in_file: f,
+                    out_path,
+                    append,
+                    tag,
+                    timestamps,
+                }
             );
 
             // Construct a new `EventEmitter` to be wrapped by the class.
