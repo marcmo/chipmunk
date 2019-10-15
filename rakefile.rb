@@ -151,6 +151,7 @@ task :setup_environment do
       end
     end
   end
+  sh "gem install rake-extensions"
 end
 
 def rg_executable
