@@ -4,7 +4,7 @@ require 'json'
 require 'pathname'
 require 'uri'
 require 'rake/clean'
-require 'rake-extensions'
+require './rake-extensions'
 
 NPM_RUN = "npm run --quiet"
 
@@ -151,7 +151,6 @@ task :setup_environment do
       end
     end
   end
-  sh "gem install rake-extensions"
 end
 
 def rg_executable
