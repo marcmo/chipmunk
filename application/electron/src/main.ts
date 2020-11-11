@@ -327,6 +327,7 @@ class Application implements IApplication {
                 verbose: gLogger.verbose.bind(gLogger),
                 wtf: gLogger.wtf.bind(gLogger),
             },
+            Logger: Logger,
         };
         (global as any).chipmunk = cGlobal;
     }
