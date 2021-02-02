@@ -2,8 +2,7 @@ import Logger from "../../tools/env.logger";
 import ServiceStreams from "../../services/service.sessions";
 import ServiceStreamSource from '../../services/service.stream.sources';
 import ServiceNotifications from "../../services/service.notifications";
-import indexer from "indexer-neon";
-import { CancelablePromise } from "indexer-neon";
+import { CancelablePromise } from "rustcore";
 import { IDLTDeamonConnectionOptions as IConnectionOptions, EDLTDeamonConnectionType, EDLTDeamonIPVersion } from '../../../../common/ipc/electron.ipc.messages/dlt.deamon.recent.response';
 import { EventEmitter } from 'events';
 
