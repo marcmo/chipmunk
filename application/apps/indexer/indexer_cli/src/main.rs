@@ -557,10 +557,10 @@ pub async fn main() -> Result<()> {
                         let mut empty_grabber =
                             processor::grabber::Grabber::lazy(&input_p, "sourceA")
                                 .expect("Grabber could not be initialized lazily");
-                        let metadata = Grabber::create_metadata_async(&input_path, None)
+                        let metadata = Grabber::create_metadata_async(&input_path)
                             .await
                             .expect("Could not create metadata async");
-                        empty_grabber.metadata = metadata;
+                        empty_grabber.metadata = metadata.into_option();
                         empty_grabber
                     } else {
                         println!("Grabber sync API");
@@ -569,7 +569,13 @@ pub async fn main() -> Result<()> {
                     }
                 };
 
-                duration_report(start_op, "initializing Grabber".to_string());
+                duration_report(
+                    start_op,
+                    format!(
+                        "initializing Grabber for {:?} lines",
+                        grabber.log_entry_count()
+                    ),
+                );
 
                 let export: bool = matches.is_present("export");
                 if export {

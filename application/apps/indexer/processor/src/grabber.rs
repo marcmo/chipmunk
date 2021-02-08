@@ -1,4 +1,7 @@
-use indexer_base::{progress::Progress, utils};
+use indexer_base::{
+    progress::{ComputationResult, Progress},
+    utils,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -18,6 +21,8 @@ pub enum GrabError {
     IoOperation(#[from] std::io::Error),
     #[error("Invalid range: ({0:?})")]
     InvalidRange(LineRange),
+    #[error("Grabber interrupted")]
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,12 +133,14 @@ impl Grabber {
     /// function.
     pub fn create_metadata(
         &mut self,
-        result_sender: cc::Sender<Progress>,
         shutdown_rx: Option<cc::Receiver<()>>,
     ) -> Result<(), GrabError> {
         if self.metadata.is_none() {
-            self.metadata =
-                Grabber::create_metadata_for_file(&self.path, &result_sender, shutdown_rx)?;
+            if let ComputationResult::Item(md) =
+                Grabber::create_metadata_for_file(&self.path, shutdown_rx)?
+            {
+                self.metadata = Some(md)
+            }
         }
         Ok(())
     }
@@ -150,8 +157,10 @@ impl Grabber {
             return Err(GrabError::Config("Cannot grab empty file".to_string()));
         }
 
-        let unused_channel = cc::unbounded();
-        let metadata = Grabber::create_metadata_for_file(&path, &unused_channel.0, None)?;
+        let metadata = match Grabber::create_metadata_for_file(&path, None)? {
+            ComputationResult::Item(md) => Ok(Some(md)),
+            ComputationResult::Stopped => Err(GrabError::Interrupted),
+        }?;
 
         Ok(Self {
             source_id: source_id.to_owned(),
@@ -176,6 +185,11 @@ impl Grabber {
         Ok(self)
     }
 
+    /// if the metadata was already created, we know the number of log entries in a file
+    pub fn log_entry_count(&self) -> Option<usize> {
+        self.metadata.as_ref().map(|md| md.line_count)
+    }
+
     fn last_line_empty(path: impl AsRef<Path>) -> Result<bool, GrabError> {
         let mut f = fs::File::open(&path)
             .map_err(|e| GrabError::Config(format!("Could not open file to grab: {}", e)))?;
@@ -191,83 +205,89 @@ impl Grabber {
 
     pub async fn create_metadata_async(
         path: impl AsRef<Path>,
-        shutdown_receiver: Option<tokio::sync::broadcast::Receiver<()>>,
-    ) -> Result<Option<GrabMetadata>, GrabError> {
+    ) -> Result<ComputationResult<GrabMetadata>, GrabError> {
         log::trace!("create_metadata_async");
-        use tokio::fs::File;
-        use tokio::io::AsyncReadExt;
-        let f = File::open(&path).await?;
-        let mut reader = tokio::io::BufReader::new(f);
-        // let input_file_size = tokio::fs::metadata(&path).await?.len();
-        let mut slots = Vec::<Slot>::new();
+        let p = PathBuf::from(path.as_ref());
+        let res = tokio::task::spawn_blocking(move || {
+            Grabber::create_metadata_for_file(p, None).unwrap()
+            // use tokio::fs::File;
+            // use tokio::io::AsyncReadExt;
+            // let f = File::open(&path).await?;
+            // let mut reader = tokio::io::BufReader::new(f);
+            // // let input_file_size = tokio::fs::metadata(&path).await?.len();
+            // let mut slots = Vec::<Slot>::new();
 
-        let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
-        let mut byte_index = 0u64;
-        let mut processed_lines = 0u64;
-        while let Ok(len) = reader.read(&mut buffer).await {
-            // TODO check for shutdown
-            // if utils::check_if_stop_was_requested(shutdown_receiver.as_ref(), "grabber") {
-            //     result_sender
-            //         .send(Progress::Stopped)
-            //         .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
-            //     return Ok(None);
+            // let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
+            // let mut byte_index = 0u64;
+            // let mut processed_lines = 0u64;
+            // while let Ok(len) = reader.read(&mut buffer).await {
+            //     // TODO check for shutdown
+            //     // if utils::check_if_stop_was_requested(shutdown_receiver.as_ref(), "grabber") {
+            //     //     result_sender
+            //     //         .send(Progress::Stopped)
+            //     //         .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
+            //     //     return Ok(None);
+            //     // }
+            //     if len == 0 {
+            //         break;
+            //     }
+            //     if len < DEFAULT_SLOT_SIZE {
+            //         buffer.resize(len, 0);
+            //     }
+            //     let line_count = bytecount::count(&buffer, b'\n') as u64
+            //         + if buffer.last() == Some(&b'\n') { 0 } else { 1 };
+            //     let slot = Slot {
+            //         bytes: ByteRange::new(byte_index, byte_index + len as u64),
+            //         lines: LineRange::new(processed_lines, processed_lines + line_count),
+            //     };
+            //     slots.push(slot);
+            //     byte_index += len as u64;
+            //     processed_lines += line_count;
+            //     if buffer.last() == Some(&b'\n') {
+            //         println!(">> last char for line {} was a \\n", processed_lines);
+            //     } else if buffer.last() == Some(&b'\r') {
+            //         println!(
+            //             "last char for line {} was a {:?}",
+            //             processed_lines,
+            //             buffer.last()
+            //         );
+            //     }
+            //     // TODO generate update events
+            //     // result_sender
+            //     //     .send(Progress::ticks(byte_index, input_file_size))
+            //     //     .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
             // }
-            if len == 0 {
-                break;
-            }
-            if len < DEFAULT_SLOT_SIZE {
-                buffer.resize(len, 0);
-            }
-            let line_count = bytecount::count(&buffer, b'\n') as u64
-                + if buffer.last() == Some(&b'\n') { 0 } else { 1 };
-            let slot = Slot {
-                bytes: ByteRange::new(byte_index, byte_index + len as u64),
-                lines: LineRange::new(processed_lines, processed_lines + line_count),
-            };
-            slots.push(slot);
-            byte_index += len as u64;
-            processed_lines += line_count;
-            if buffer.last() == Some(&b'\n') {
-                println!(">> last char for line {} was a \\n", processed_lines);
-            } else if buffer.last() == Some(&b'\r') {
-                println!(
-                    "last char for line {} was a {:?}",
-                    processed_lines,
-                    buffer.last()
-                );
-            }
-            // TODO generate update events
-            // result_sender
-            //     .send(Progress::ticks(byte_index, input_file_size))
-            //     .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
-        }
-        // TODO generate done event
-        // result_sender
-        //     .send(Progress::ticks(input_file_size, input_file_size))
-        //     .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
-        Ok(Some(GrabMetadata {
-            slots,
-            line_count: processed_lines as usize,
-        }))
+            // // TODO generate done event
+            // // result_sender
+            // //     .send(Progress::ticks(input_file_size, input_file_size))
+            // //     .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
+            // Ok(Some(GrabMetadata {
+            //     slots,
+            //     line_count: processed_lines as usize,
+            // }))
+        })
+        .await;
+        let g: ComputationResult<GrabMetadata> =
+            res.map_err(|e| GrabError::Config(format!("Error executing async grab: {}", e)))?;
+        Ok(g)
     }
+
     pub fn create_metadata_for_file(
         path: impl AsRef<Path>,
-        result_sender: &cc::Sender<Progress>,
         shutdown_receiver: Option<cc::Receiver<()>>,
-    ) -> Result<Option<GrabMetadata>, GrabError> {
-        let mut f = fs::File::open(&path)?;
-        let input_file_size = std::fs::metadata(&path)?.len();
+    ) -> Result<ComputationResult<GrabMetadata>, GrabError> {
+        let f = fs::File::open(&path)?;
+        let mut reader = std::io::BufReader::new(f);
         let mut slots = Vec::<Slot>::new();
 
-        let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
+        // let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
+        let mut buffer = vec![0; 64 * 1000usize];
+
         let mut byte_index = 0u64;
         let mut processed_lines = 0u64;
-        while let Ok(len) = f.read(&mut buffer) {
+        while let Ok(len) = reader.read(&mut buffer) {
             if utils::check_if_stop_was_requested(shutdown_receiver.as_ref(), "grabber") {
-                result_sender
-                    .send(Progress::Stopped)
-                    .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
-                return Ok(None);
+                return Ok(ComputationResult::Stopped);
             }
             if len == 0 {
                 break;
@@ -276,26 +296,25 @@ impl Grabber {
                 buffer.resize(len, 0);
             }
             let nl_count = bytecount::count(&buffer, b'\n') as u64;
-            let (line_count, byte_count) = if buffer.last() == Some(&b'\n') {
-                (nl_count, len as u64)
-            } else {
-                (nl_count + 1, len as u64)
-            };
+            let (line_count, byte_count) = (nl_count + 1, len as u64);
             let slot = Slot {
                 bytes: ByteRange::new(byte_index, byte_index + byte_count),
                 lines: LineRange::new(processed_lines, processed_lines + line_count),
             };
             slots.push(slot);
+            if processed_lines < 1000 {
+                println!(
+                    "processed bytes [{}..{}] (lines [{}..{}])",
+                    byte_index,
+                    byte_index + len as u64,
+                    processed_lines,
+                    processed_lines + line_count
+                );
+            }
             byte_index += len as u64;
             processed_lines += line_count;
-            result_sender
-                .send(Progress::ticks(byte_index, input_file_size))
-                .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
         }
-        result_sender
-            .send(Progress::ticks(input_file_size, input_file_size))
-            .map_err(|_| GrabError::Communication("Could not send progress".to_string()))?;
-        Ok(Some(GrabMetadata {
+        Ok(ComputationResult::Item(GrabMetadata {
             slots,
             line_count: processed_lines as usize,
         }))
@@ -358,13 +377,15 @@ impl Grabber {
     /// naive implementation that just reads all slots that are involved and drops
     /// everything that is not needed
     pub fn get_entries(&self, line_range: &LineRange) -> Result<GrabbedContent, GrabError> {
+        println!("get_entries for range: {:?}", line_range);
         if line_range.range.end <= line_range.range.start {
             return Err(GrabError::InvalidRange(line_range.clone()));
         }
         use std::io::prelude::*;
         let maybe_start_slot = self.identify_slot(line_range.range.start);
         let maybe_end_slot = self.identify_slot(line_range.range.end - 1);
-        trace!(
+        println!(
+            // trace!(
             "get_entries({} lines).\n\tstart-slot {:?}\n\tend-slot: {:?}",
             line_range.range.end - line_range.range.start,
             maybe_start_slot,
@@ -383,13 +404,17 @@ impl Grabber {
                 let to_skip = line_range.range.start - start_slot.lines.range.start;
                 let to_take = line_range.range.end - line_range.range.start;
                 let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
+                println!("skipping {} lines", to_skip);
                 let grabbed_elements = s
                     .split(|c| c == '\n' || c == '\r')
                     .skip(to_skip as usize)
                     .take(to_take as usize)
-                    .map(|s| GrabbedElement {
-                        source_id: self.source_id.clone(),
-                        content: s.to_owned(),
+                    .map(|s| {
+                        println!("grabbed elem {}:", s);
+                        GrabbedElement {
+                            source_id: self.source_id.clone(),
+                            content: s.to_owned(),
+                        }
                     })
                     .collect::<Vec<GrabbedElement>>();
                 Ok(GrabbedContent { grabbed_elements })
