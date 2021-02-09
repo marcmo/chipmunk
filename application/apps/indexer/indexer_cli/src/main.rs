@@ -597,13 +597,14 @@ pub async fn main() -> Result<()> {
                 }
 
                 let start_op = Instant::now();
-                let r = LineRange::new(start, start + length);
+                let start_index = start - 1;
+                let r = LineRange::from(start_index..=(start_index + length - 1));
                 let res = grabber.get_entries(&r);
 
                 match res {
                     Ok(v) => {
                         duration_report(start_op, format!("grabbing {} lines", length));
-                        let mut i = start;
+                        let mut i = start_index;
                         for (cnt, s) in v.grabbed_elements.iter().enumerate() {
                             if s.content.len() > 50 {
                                 println!("[{}]--> {}", i + 1, &s.content[..50]);
