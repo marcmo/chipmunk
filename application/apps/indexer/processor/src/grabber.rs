@@ -196,14 +196,15 @@ impl Grabber {
         log::trace!("create_metadata_async");
         use tokio::fs::File;
         use tokio::io::AsyncReadExt;
-        let mut f = File::open(&path).await?;
-        let input_file_size = tokio::fs::metadata(&path).await?.len();
+        let f = File::open(&path).await?;
+        let mut reader = tokio::io::BufReader::new(f);
+        // let input_file_size = tokio::fs::metadata(&path).await?.len();
         let mut slots = Vec::<Slot>::new();
 
         let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
         let mut byte_index = 0u64;
         let mut processed_lines = 0u64;
-        while let Ok(len) = f.read(&mut buffer).await {
+        while let Ok(len) = reader.read(&mut buffer).await {
             // TODO check for shutdown
             // if utils::check_if_stop_was_requested(shutdown_receiver.as_ref(), "grabber") {
             //     result_sender
@@ -217,7 +218,8 @@ impl Grabber {
             if len < DEFAULT_SLOT_SIZE {
                 buffer.resize(len, 0);
             }
-            let line_count = bytecount::count(&buffer, b'\n') as u64 + 1;
+            let line_count = bytecount::count(&buffer, b'\n') as u64
+                + if buffer.last() == Some(&b'\n') { 0 } else { 1 };
             let slot = Slot {
                 bytes: ByteRange::new(byte_index, byte_index + len as u64),
                 lines: LineRange::new(processed_lines, processed_lines + line_count),
@@ -225,6 +227,15 @@ impl Grabber {
             slots.push(slot);
             byte_index += len as u64;
             processed_lines += line_count;
+            if buffer.last() == Some(&b'\n') {
+                println!(">> last char for line {} was a \\n", processed_lines);
+            } else if buffer.last() == Some(&b'\r') {
+                println!(
+                    "last char for line {} was a {:?}",
+                    processed_lines,
+                    buffer.last()
+                );
+            }
             // TODO generate update events
             // result_sender
             //     .send(Progress::ticks(byte_index, input_file_size))
@@ -264,9 +275,14 @@ impl Grabber {
             if len < DEFAULT_SLOT_SIZE {
                 buffer.resize(len, 0);
             }
-            let line_count = bytecount::count(&buffer, b'\n') as u64 + 1;
+            let nl_count = bytecount::count(&buffer, b'\n') as u64;
+            let (line_count, byte_count) = if buffer.last() == Some(&b'\n') {
+                (nl_count, len as u64)
+            } else {
+                (nl_count + 1, len as u64)
+            };
             let slot = Slot {
-                bytes: ByteRange::new(byte_index, byte_index + len as u64),
+                bytes: ByteRange::new(byte_index, byte_index + byte_count),
                 lines: LineRange::new(processed_lines, processed_lines + line_count),
             };
             slots.push(slot);
