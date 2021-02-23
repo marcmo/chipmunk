@@ -125,6 +125,7 @@ fn maybe_parse_ecu_id(a: bool) -> impl Fn(&[u8]) -> IResult<&[u8], Option<&str>>
     fn parse_ecu_id_to_option(input: &[u8]) -> IResult<&[u8], Option<&str>> {
         map(parse_ecu_id, Some)(input)
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn parse_nothing_str(input: &[u8]) -> IResult<&[u8], Option<&str>> {
         Ok((input, None))
     }
@@ -138,6 +139,7 @@ fn maybe_parse_u32(a: bool) -> impl Fn(&[u8]) -> IResult<&[u8], Option<u32>> {
     fn parse_u32_to_option(input: &[u8]) -> IResult<&[u8], Option<u32>> {
         map(streaming::be_u32, Some)(input)
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn parse_nothing_u32(input: &[u8]) -> IResult<&[u8], Option<u32>> {
         Ok((input, None))
     }
