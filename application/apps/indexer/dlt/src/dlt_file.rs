@@ -36,6 +36,10 @@ use std::{
 
 use crate::fibex::FibexMetadata;
 
+// pub async fn count_messages(in_file: &Path) -> Result<u64, DltParseError> {
+//     Ok(2)
+// }
+
 pub async fn parse_dlt_file(
     in_file: PathBuf,
     filter_config: Option<filtering::ProcessedDltFilterConfig>,

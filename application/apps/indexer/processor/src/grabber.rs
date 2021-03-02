@@ -127,6 +127,16 @@ impl Slot {
     }
 }
 
+pub trait LogItem {
+    fn id(&self) -> String;
+}
+
+impl LogItem for String {
+    fn id(&self) -> String {
+        self.clone()
+    }
+}
+
 #[derive(Debug)]
 pub struct Grabber {
     pub source_id: String,
@@ -231,7 +241,7 @@ impl Grabber {
         if len == 0 {
             unreachable!("There must be a last line");
         }
-        Ok(buffer[0] == b'\n' || buffer[0] == b'\r')
+        Ok(is_newline(buffer[0]))
     }
 
     pub async fn create_metadata_async(
@@ -303,50 +313,99 @@ impl Grabber {
         Ok(g)
     }
 
+    pub fn create_metadata_for_dlt_file(
+        path: impl AsRef<Path>,
+        shutdown_receiver: Option<cc::Receiver<()>>,
+    ) -> Result<ComputationResult<GrabMetadata>, GrabError> {
+        Err(GrabError::NotInitialize)
+    }
+
     pub fn create_metadata_for_file(
         path: impl AsRef<Path>,
         shutdown_receiver: Option<cc::Receiver<()>>,
     ) -> Result<ComputationResult<GrabMetadata>, GrabError> {
         let f = fs::File::open(&path)?;
+        let input_file_size = f.metadata()?.len();
         let mut reader = std::io::BufReader::new(f);
         let mut slots = Vec::<Slot>::new();
 
+        let slot_size = 20usize;
+        // let slot_size = DEFAULT_SLOT_SIZE;
         // let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
-        let mut buffer = vec![0; 20usize];
+        let mut buffer = vec![0; slot_size];
 
         let mut byte_index = 0u64;
-        let mut processed_lines = 0u64;
-        while let Ok(len) = reader.read(&mut buffer) {
+        let mut line_index = 0u64;
+        while let Ok(read_bytes) = reader.read(&mut buffer) {
             if utils::check_if_stop_was_requested(shutdown_receiver.as_ref(), "grabber") {
                 return Ok(ComputationResult::Stopped);
             }
-            if len == 0 {
+            if read_bytes == 0 {
+                // we are done
                 break;
             }
-            if len < DEFAULT_SLOT_SIZE {
-                buffer.resize(len, 0);
+            // println!("we read {} bytes into the buffer", read_bytes);
+            if read_bytes < DEFAULT_SLOT_SIZE {
+                buffer.resize(read_bytes, 0);
             }
             let nl_count = bytecount::count(&buffer, b'\n') as u64;
-            let (line_count, byte_count) = (nl_count + 1, len as u64);
-            let line_rang_start = if processed_lines > 0 {
-                processed_lines - 1
-            } else {
-                0
-            };
+            if nl_count == 0 && input_file_size > slot_size as u64 {
+                return Err(GrabError::Config(format!(
+                    "Unable to load full item content into slot of size {}",
+                    slot_size
+                )));
+            }
+            let starts_with_nl = is_newline(buffer[0]);
+            let ends_with_nl = is_newline(buffer[read_bytes - 1]);
+            let lines_in_slot = nl_count + 1;
+            // - if starts_with_nl { 1 } else { 0 }
+            // - if ends_with_nl { 1 } else { 0 };
+            let mut line_range_start = line_index;
+            if starts_with_nl && read_bytes != 1 {
+                line_range_start += 1;
+            }
+            let line_range_end = subtract_what_is_possible(line_index + lines_in_slot, 1);
+            let byte_range_start = byte_index
+                + if starts_with_nl && read_bytes != 1 {
+                    1
+                } else {
+                    0
+                };
+            let byte_range_end = subtract_what_is_possible(
+                byte_index + read_bytes as u64,
+                if ends_with_nl { 2 } else { 1 },
+            );
             let slot = Slot {
-                bytes: ByteRange::from(byte_index..=byte_index + byte_count - 1),
-                lines: LineRange::from(line_rang_start..=processed_lines + line_count - 1),
+                bytes: ByteRange::from(byte_range_start..=byte_range_end),
+                lines: LineRange::from(line_range_start..=line_range_end),
             };
-            if processed_lines < 20 {
-                println!("[processed slot] {:?}", slot);
+
+            if slots.len() < 20 {
+                println!(
+                    "buffer[0] = '{}', buffer[read_bytes-1] = '{}'",
+                    buffer[0],
+                    buffer[read_bytes - 1],
+                );
+                println!(
+                    "[processed slot[{}]({} \\n)] {:?} {}{}",
+                    slots.len(),
+                    nl_count,
+                    slot,
+                    if starts_with_nl {
+                        "(started with \\n)"
+                    } else {
+                        ""
+                    },
+                    if ends_with_nl { "(ended with \\n)" } else { "" }
+                );
             }
             slots.push(slot);
-            byte_index += len as u64;
-            processed_lines += line_count;
+            byte_index += read_bytes as u64;
+            line_index += nl_count;
         }
         Ok(ComputationResult::Item(GrabMetadata {
             slots,
-            line_count: processed_lines as usize,
+            line_count: (line_index + 1) as usize,
         }))
     }
 
@@ -467,12 +526,12 @@ pub(crate) fn identify_end_slot_simple(slots: &[Slot], line_index: u64) -> Optio
     match slots.len() {
         0 => None,
         slots_len => {
-            let mut i = slots_len - 1;
+            let mut i = slots_len;
             for slot in slots.iter().rev() {
+                i -= 1;
                 if slot.lines.range.contains(&line_index) {
                     return Some((slot.clone(), i));
                 }
-                i -= 1;
             }
             None
         }
@@ -548,4 +607,16 @@ pub(crate) fn identify_start_slot(slots: &[Slot], line_index: u64) -> Option<(Sl
       //     }
       // }
     None
+}
+
+fn is_newline(item: u8) -> bool {
+    item == b'\n' || item == b'\r'
+}
+
+fn subtract_what_is_possible(n: u64, m: u64) -> u64 {
+    if n >= m {
+        n - m
+    } else {
+        0
+    }
 }

@@ -182,17 +182,11 @@ impl RustSession {
                             } => {
                                 println!("RUST: received Assign operation event");
 
-                                match Grabber::create_metadata_async(
-                                    file_path,
-                                    Some(shutdown_tx.subscribe()),
-                                )
-                                .await
-                                {
+                                match Grabber::create_metadata_async(file_path).await {
                                     Ok(metadata) => {
                                         println!("RUST: received metadata");
-                                        let line_count: Option<u64> = metadata.as_ref().map(|mt| {
-                                            mt.line_count as u64
-                                        });
+                                        let line_count: Option<u64> =
+                                            metadata.as_ref().map(|mt| mt.line_count as u64);
                                         let _ = metadata_tx.send(Ok(metadata));
                                         if let Some(lc) = line_count {
                                             callback(CallbackEvent::StreamUpdated(lc));
@@ -205,7 +199,10 @@ impl RustSession {
                                         )));
                                     }
                                 }
-                                callback(CallbackEvent::OperationDone(OperationDone { uuid: operation_id, result: None}));
+                                callback(CallbackEvent::OperationDone(OperationDone {
+                                    uuid: operation_id,
+                                    result: None,
+                                }));
                             }
                             Operation::End => {
                                 println!("RUST: received End operation event");

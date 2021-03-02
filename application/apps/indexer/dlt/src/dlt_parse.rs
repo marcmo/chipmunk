@@ -628,17 +628,12 @@ fn dlt_payload<T: NomByteOrder>(
     payload_length: u16,
     arg_cnt: u8,
     is_controll_msg: bool,
-) -> IResult<&[u8], Payload2> {
+) -> IResult<&[u8], PayloadContent> {
     // trace!("try to parse dlt_payload for {:02X?}", input,);
     if verbose {
         // trace!("verbose, arg_cnt = {}", arg_cnt);
         let (rest, arguments) = count(dlt_argument::<T>, arg_cnt as usize)(input)?;
-        Ok((
-            rest,
-            Payload2 {
-                payload_content: PayloadContent::Verbose(arguments),
-            },
-        ))
+        Ok((rest, PayloadContent::Verbose(arguments)))
     } else if is_controll_msg {
         // trace!("is_controll_msg");
         if payload_length < 1 {
@@ -648,12 +643,10 @@ fn dlt_payload<T: NomByteOrder>(
         match tuple((nom::number::complete::be_u8, take(payload_length - 1)))(input) {
             Ok((rest, (control_msg_id, payload))) => Ok((
                 rest,
-                Payload2 {
-                    payload_content: PayloadContent::ControlMsg(
-                        ControlType::from_value(control_msg_id),
-                        payload.to_vec(),
-                    ),
-                },
+                PayloadContent::ControlMsg(
+                    ControlType::from_value(control_msg_id),
+                    payload.to_vec(),
+                ),
             )),
             Err(e) => {
                 // trace!("error e {:?}", e);
@@ -674,9 +667,7 @@ fn dlt_payload<T: NomByteOrder>(
         match tuple((T::parse_u32, take(payload_length - 4)))(input) {
             Ok((rest, (message_id, payload))) => Ok((
                 rest,
-                Payload2 {
-                    payload_content: PayloadContent::NonVerbose(message_id, payload.to_vec()),
-                },
+                PayloadContent::NonVerbose(message_id, payload.to_vec()),
             )),
             Err(e) => {
                 // trace!("error e {:?}", e);
@@ -982,6 +973,30 @@ pub(crate) fn skip_storage_header(input: &[u8]) -> Result<(&[u8], u64), DltParse
     }
 }
 
+pub fn dlt_consume_msg(input: &[u8]) -> Result<(&[u8], bool), DltParseError> {
+    println!("dlt_consume_msg(1)");
+    // let (after_storage_header, _) = if with_storage_header {
+    //     println!("dlt_consume_msg(2)");
+    //     skip_till_after_next_storage_header(input)?
+    // } else {
+    //     println!("dlt_consume_msg(3)");
+    //     (input, 0)
+    // };
+
+    let (after_storage_header, skipped_bytes) = skip_storage_header(input)?;
+    println!("dlt_consume_msg(4)");
+    let (_, header) = dlt_standard_header(after_storage_header)?;
+    println!("dlt_consume_msg(5)");
+    let overall_length_without_storage_header = header.overall_length();
+    println!("dlt_consume_msg(6)");
+
+    let (after_message, _) = take(overall_length_without_storage_header)(after_storage_header)?;
+    println!("dlt_consume_msg(7)");
+    // let consume = take(overall_length_without_storage_header);
+    // let res = consume(after_storage_header)?;
+    Ok((after_message, true))
+}
+
 pub fn dlt_statistic_row_info<'a, T>(
     input: &'a [u8],
     index: Option<usize>,
@@ -989,7 +1004,6 @@ pub fn dlt_statistic_row_info<'a, T>(
     update_channel: Option<&cc::Sender<IndexingResults<T>>>,
 ) -> Result<(&'a [u8], StatisticRowInfo), DltParseError> {
     let update_channel_ref = update_channel;
-    // let (after_storage_header, _) = skip_till_after_next_storage_header(input)?;
     let (after_storage_header, _) = if with_storage_header {
         skip_till_after_next_storage_header(input)?
     } else {
