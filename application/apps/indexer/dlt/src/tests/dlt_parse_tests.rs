@@ -275,6 +275,7 @@ mod tests {
                 Ok((b"----", Some(header_to_expect)));
             assert_eq!(expected, res);
         }
+        /*
         #[test]
         fn test_count_messages(messages in messages_strat(10)) {
             println!("...............................test");
@@ -296,6 +297,7 @@ mod tests {
             }
             assert_eq!(msg_cnt, 14);
         }
+        */
 
         #[test]
         fn test_dlt_standard_header(header_to_expect in header_strategy(4, Endianness::Big)) {
