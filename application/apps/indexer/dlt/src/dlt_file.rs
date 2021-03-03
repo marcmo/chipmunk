@@ -10,6 +10,7 @@
 // is strictly forbidden unless prior written permission is obtained
 // from E.S.R.Labs.
 use crate::dlt_fmt::FormattableMessage;
+use crate::dlt_parse::dlt_consume_msg;
 use crate::fibex::gather_fibex_data;
 use crate::{
     dlt::Message,
@@ -28,6 +29,7 @@ use indexer_base::{
     progress::*,
     utils,
 };
+use std::path::Path;
 use std::{
     fs,
     io::{BufRead, BufWriter, Write},
@@ -138,9 +140,10 @@ impl FileMessageProducer {
                     content: format!("could not open file ({})", e),
                     line: None,
                 }));
-                return Err(DltParseError::Unrecoverable {
-                    cause: format!("could not open file ({})", e),
-                });
+                return Err(DltParseError::Unrecoverable(format!(
+                    "could not open file ({})",
+                    e
+                )));
             }
         };
         let reader = ReduxReader::with_capacity(DLT_READER_CAPACITY, f)
@@ -205,38 +208,34 @@ impl FileMessageProducer {
                                 Some(s) => format!("{}", s),
                                 None => "unknown".to_string(),
                             };
-                            break (0, Err(DltParseError::Unrecoverable {
-                                cause: format!(
+                            break (0, Err(DltParseError::Unrecoverable (
+                                format!(
                                     "read_one_dlt_message: imcomplete parsing error for dlt messages: (bytes left: {}, but needed: {})",
                                     content.len(),
                                     needed_s
                                 ),
-                            }));
+                            )));
                         }
-                        Err(DltParseError::ParsingHickup { reason }) => {
+                        Err(DltParseError::ParsingHickup(reason)) => {
                             warn!("parse error");
                             self.stats.no_parse += 1;
                             break (
                                 DLT_PATTERN_SIZE,
-                                Err(DltParseError::ParsingHickup {
-                                    reason: format!(
-                                        "read_one_dlt_message: parsing error for dlt messages: {}",
-                                        reason
-                                    ),
-                                }),
+                                Err(DltParseError::ParsingHickup(format!(
+                                    "read_one_dlt_message: parsing error for dlt messages: {}",
+                                    reason
+                                ))),
                             );
                         }
-                        Err(DltParseError::Unrecoverable { cause }) => {
+                        Err(DltParseError::Unrecoverable(cause)) => {
                             warn!("parse failure");
                             self.stats.no_parse += 1;
                             break (
                                 0,
-                                Err(DltParseError::Unrecoverable {
-                                    cause: format!(
+                                Err(DltParseError::Unrecoverable(format!(
                                     "read_one_dlt_message: parsing failure for dlt messages: {}",
                                     cause
-                                ),
-                                }),
+                                ))),
                             );
                         }
                     }
@@ -245,9 +244,10 @@ impl FileMessageProducer {
                     trace!("no more content");
                     break (
                         0,
-                        Err(DltParseError::Unrecoverable {
-                            cause: format!("error for filling buffer with dlt messages: {:?}", e),
-                        }),
+                        Err(DltParseError::Unrecoverable(format!(
+                            "error for filling buffer with dlt messages: {:?}",
+                            e
+                        ))),
                     );
                 }
             }
@@ -277,6 +277,45 @@ impl tokio_stream::Stream for FileMessageProducer {
             }
             Err(e) => core::task::Poll::Ready(Some(Err(e))),
         }
+    }
+}
+
+pub fn count_dlt_messages(input: &Path) -> Result<u64, DltParseError> {
+    if input.exists() {
+        let f = fs::File::open(&input)?;
+
+        let mut reader = ReduxReader::with_capacity(DLT_READER_CAPACITY, f)
+            .set_policy(MinBuffered(DLT_MIN_BUFFER_SPACE));
+
+        let mut msg_cnt: u64 = 0;
+        loop {
+            match reader.fill_buf() {
+                Ok(content) => {
+                    if content.is_empty() {
+                        break;
+                    }
+                    if let Ok((_rest, Some(consumed))) = dlt_consume_msg(content) {
+                        reader.consume(consumed as usize);
+                        msg_cnt += 1;
+                    } else {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    trace!("no more content");
+                    return Err(DltParseError::Unrecoverable(format!(
+                        "error for filling buffer with dlt messages: {:?}",
+                        e
+                    )));
+                }
+            }
+        }
+        Ok(msg_cnt)
+    } else {
+        Err(DltParseError::Unrecoverable(format!(
+            "Couldn't find dlt file: {:?}",
+            input
+        )))
     }
 }
 
@@ -356,7 +395,7 @@ pub fn index_dlt_content(
                 skipped += 1;
             }
             Err(e) => match e {
-                DltParseError::ParsingHickup { reason } => {
+                DltParseError::ParsingHickup(reason) => {
                     warn!(
                         "error parsing 1 dlt message, try to continue parsing: {}",
                         reason
@@ -467,7 +506,7 @@ pub fn export_as_dlt_file(
             content: reason.clone(),
             line: None,
         }));
-        Err(DltParseError::Unrecoverable { cause: reason })
+        Err(DltParseError::Unrecoverable(reason))
     }
 }
 

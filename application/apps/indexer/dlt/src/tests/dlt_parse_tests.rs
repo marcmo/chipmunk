@@ -275,29 +275,28 @@ mod tests {
                 Ok((b"----", Some(header_to_expect)));
             assert_eq!(expected, res);
         }
-        /*
         #[test]
-        fn test_count_messages(messages in messages_strat(10)) {
-            println!("...............................test");
+        fn test_count_messages(messages in stored_messages_strat(10)) {
             let mut content = vec![];
+            let generated_msg_cnt = messages.len();
             for msg in messages {
                 let msg_bytes = msg.as_bytes();
                 content.extend(msg_bytes);
             }
             let mut was_message = true;
             let mut msg_cnt = 0usize;
+            let mut remaining: &[u8] = &content;
             while was_message {
-                if let Ok((rest, contained_msg))  = dlt_consume_msg(&content) {
-                    was_message = contained_msg;
+                if let Ok((rest, consumed))  = dlt_consume_msg(remaining) {
+                    was_message = consumed.is_some();
+                    remaining = rest;
                     msg_cnt += 1;
-                    println!("rest was {}", rest.len());
                 } else {
                     break;
                 }
             }
-            assert_eq!(msg_cnt, 14);
+            assert_eq!(msg_cnt, generated_msg_cnt);
         }
-        */
 
         #[test]
         fn test_dlt_standard_header(header_to_expect in header_strategy(4, Endianness::Big)) {

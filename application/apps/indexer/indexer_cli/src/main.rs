@@ -22,6 +22,7 @@ extern crate lazy_static;
 use anyhow::{anyhow, Result};
 use crossbeam_channel as cc;
 use crossbeam_channel::unbounded;
+use dlt::dlt_file::count_dlt_messages;
 use dlt::{dlt_file::export_as_dlt_file, dlt_parse::StatisticsResults, dlt_pcap::pcap_to_dlt};
 use env_logger::Env;
 use indexer_base::{
@@ -1480,9 +1481,8 @@ pub async fn main() -> Result<()> {
         let file_path = path::PathBuf::from(file_name);
         let count: bool = matches.is_present("count");
         if count {
-            let pattern = r"\x44\x4C\x54\x01";
-            if let Ok(res) = count_pattern_in_binary(pattern, &file_path) {
-                println!("counting pattern {} in file: {}", pattern, res);
+            if let Ok(res) = count_dlt_messages(&file_path) {
+                println!("counting dlt-msgs in file: {}", res);
             }
         } else {
             let f = match fs::File::open(&file_path) {
