@@ -1339,6 +1339,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "dirs",
+ "dlt",
  "encoding_rs_io",
  "env_logger",
  "futures",

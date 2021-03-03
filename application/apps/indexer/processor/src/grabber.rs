@@ -1,8 +1,11 @@
+use buf_redux::{policy::MinBuffered, BufReader as ReduxReader};
+use dlt::dlt_parse::dlt_consume_msg;
+use dlt::dlt_parse::DltParseError;
 use indexer_base::{progress::ComputationResult, utils};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt, fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufRead, Read, Seek, SeekFrom, Write},
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
@@ -23,6 +26,9 @@ pub enum GrabError {
     #[error("Metadata initialization not done")]
     NotInitialize,
 }
+
+const REDUX_READER_CAPACITY: usize = 10 * 1024 * 1024;
+const REDUX_MIN_BUFFER_SPACE: usize = 10 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GrabbedElement {
@@ -192,20 +198,28 @@ impl Grabber {
     /// ...
     /// A new Grabber instance can only be created if the file is non-empty,
     /// otherwise this function will return an error
-    pub fn new(path: impl AsRef<Path>, source_id: &str) -> Result<Self, GrabError> {
+    pub fn new(path: &Path, source_id: &str) -> Result<Self, GrabError> {
         let input_file_size = std::fs::metadata(&path)?.len();
         if input_file_size == 0 {
             return Err(GrabError::Config("Cannot grab empty file".to_string()));
         }
+        let extension = path
+            .extension()
+            .ok_or_else(|| GrabError::Config("Cannot get path extension".to_owned()))?;
+        let computation_res = if extension == "dlt" {
+            Grabber::create_metadata_for_dlt_file(&path, None)?
+        } else {
+            Grabber::create_metadata_for_file(&path, None)?
+        };
 
-        let metadata = match Grabber::create_metadata_for_file(&path, None)? {
+        let metadata = match computation_res {
             ComputationResult::Item(md) => Ok(Some(md)),
             ComputationResult::Stopped => Err(GrabError::Interrupted),
         }?;
 
         Ok(Self {
             source_id: source_id.to_owned(),
-            path: path.as_ref().to_owned(),
+            path: path.to_owned(),
             metadata,
             input_file_size,
             last_line_empty: Grabber::last_line_empty(&path)?,
@@ -314,10 +328,70 @@ impl Grabber {
     }
 
     pub fn create_metadata_for_dlt_file(
-        path: impl AsRef<Path>,
+        input: &Path,
         shutdown_receiver: Option<cc::Receiver<()>>,
     ) -> Result<ComputationResult<GrabMetadata>, GrabError> {
-        Err(GrabError::NotInitialize)
+        if !fs::metadata(&input)?.is_file() {
+            return Err(GrabError::Config(format!(
+                "File {} does not exist",
+                input.to_string_lossy()
+            )));
+        }
+        let mut slots = Vec::<Slot>::new();
+
+        let f = fs::File::open(&input)?;
+
+        let mut reader = ReduxReader::with_capacity(REDUX_READER_CAPACITY, f)
+            .set_policy(MinBuffered(REDUX_MIN_BUFFER_SPACE));
+
+        let mut bytes_in_slot = 0u64;
+        let mut bytes_offset = 0u64;
+        let mut log_entry_count = 0u64;
+        let mut logs_in_slot = 0u64;
+        let mut msg_cnt: u64 = 0;
+        loop {
+            match reader.fill_buf() {
+                Ok(content) => {
+                    if content.is_empty() {
+                        break;
+                    }
+                    if let Ok((_rest, Some(consumed))) = dlt_consume_msg(content) {
+                        reader.consume(consumed as usize);
+                        msg_cnt += 1;
+                        logs_in_slot += 1;
+                        bytes_offset += consumed;
+                        bytes_in_slot += consumed;
+                        log_entry_count += 1;
+                        if bytes_in_slot >= DEFAULT_SLOT_SIZE as u64 {
+                            let slot = Slot {
+                                bytes: ByteRange::from(
+                                    (bytes_offset - bytes_in_slot)..=bytes_offset,
+                                ),
+                                lines: LineRange::from(
+                                    log_entry_count - logs_in_slot..=log_entry_count,
+                                ),
+                            };
+                            slots.push(slot);
+                            bytes_in_slot = 0;
+                            logs_in_slot = 0;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    trace!("no more content");
+                    return Err(GrabError::Config(format!(
+                        "error for filling buffer with dlt messages: {:?}",
+                        e
+                    )));
+                }
+            }
+        }
+        Ok(ComputationResult::Item(GrabMetadata {
+            slots,
+            line_count: msg_cnt as usize,
+        }))
     }
 
     pub fn create_metadata_for_file(
@@ -329,8 +403,8 @@ impl Grabber {
         let mut reader = std::io::BufReader::new(f);
         let mut slots = Vec::<Slot>::new();
 
-        let slot_size = 20usize;
-        // let slot_size = DEFAULT_SLOT_SIZE;
+        // let slot_size = 20usize;
+        let slot_size = DEFAULT_SLOT_SIZE;
         // let mut buffer = vec![0; DEFAULT_SLOT_SIZE];
         let mut buffer = vec![0; slot_size];
 
@@ -443,7 +517,44 @@ impl Grabber {
                 read_from.seek(SeekFrom::Start(file_part.offset_in_file))?;
                 read_from.read_exact(&mut read_buf)?;
                 let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
-                println!("skipping {} lines", file_part.lines_to_skip);
+                println!("skipping {} entries", file_part.lines_to_skip);
+
+                let all_lines = s.split(|c| c == '\n' || c == '\r');
+                let lines_minus_end =
+                    all_lines.take(file_part.total_lines - file_part.lines_to_drop);
+                let pure_lines = lines_minus_end.skip(file_part.lines_to_skip);
+                let grabbed_elements = pure_lines
+                    .map(|s| GrabbedElement {
+                        source_id: self.source_id.clone(),
+                        content: s.to_owned(),
+                    })
+                    .collect::<Vec<GrabbedElement>>();
+                Ok(GrabbedContent { grabbed_elements })
+            }
+        }
+    }
+
+    pub fn get_dlt_entries(&self, line_range: &LineRange) -> Result<GrabbedContent, GrabError> {
+        println!("get_dlt_entries for range: {:?}", line_range);
+        match &self.metadata {
+            None => Err(GrabError::NotInitialize),
+            Some(metadata) => {
+                if line_range.range.is_empty() {
+                    return Err(GrabError::InvalidRange(line_range.clone()));
+                }
+                use std::io::prelude::*;
+
+                let file_part = identify_byte_range(&metadata.slots, line_range)
+                    .ok_or_else(|| GrabError::InvalidRange(line_range.clone()))?;
+                println!("file-part: {:?}", file_part);
+
+                let mut read_buf = vec![0; file_part.length];
+                let mut read_from = fs::File::open(&self.path)?;
+
+                read_from.seek(SeekFrom::Start(file_part.offset_in_file))?;
+                read_from.read_exact(&mut read_buf)?;
+                let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
+                println!("skipping {} entries", file_part.lines_to_skip);
 
                 let all_lines = s.split(|c| c == '\n' || c == '\r');
                 let lines_minus_end =
