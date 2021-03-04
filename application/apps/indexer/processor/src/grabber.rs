@@ -1,8 +1,14 @@
 use buf_redux::{policy::MinBuffered, BufReader as ReduxReader};
-use dlt::dlt_parse::dlt_consume_msg;
+use crossbeam_channel::unbounded;
+use dlt::dlt::Message;
+use dlt::dlt_file::FileMessageProducer;
+use dlt::dlt_fmt::FormattableMessage;
 use dlt::dlt_parse::DltParseError;
+use dlt::dlt_parse::{dlt_consume_msg, ParsedMessage};
+use indexer_base::chunks::ChunkResults;
 use indexer_base::{progress::ComputationResult, utils};
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 use std::{
     fmt, fs,
     io::{BufRead, Read, Seek, SeekFrom, Write},
@@ -553,17 +559,45 @@ impl Grabber {
 
                 read_from.seek(SeekFrom::Start(file_part.offset_in_file))?;
                 read_from.read_exact(&mut read_buf)?;
-                let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
-                println!("skipping {} entries", file_part.lines_to_skip);
 
-                let all_lines = s.split(|c| c == '\n' || c == '\r');
-                let lines_minus_end =
-                    all_lines.take(file_part.total_lines - file_part.lines_to_drop);
-                let pure_lines = lines_minus_end.skip(file_part.lines_to_skip);
+                let (tx, rx): (cc::Sender<ChunkResults>, cc::Receiver<ChunkResults>) = unbounded();
+                let message_stream =
+                    FileMessageProducer::new(Cursor::new(read_buf), None, tx, true, None);
+
+                let mut messages: Vec<Message> = Vec::new();
+                for msg_result in message_stream {
+                    trace!("got message from stream: {:?}", msg_result);
+                    match msg_result {
+                        ParsedMessage::Item(msg) => {
+                            // progress_reporter.make_progress(consumed);
+                            messages.push(msg)
+                        }
+                        _ => warn!("Could not produce message"),
+                    }
+                }
+
+                // let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
+                // println!("skipping {} entries", file_part.lines_to_skip);
+
+                // let all_lines = s.split(|c| c == '\n' || c == '\r');
+                // let lines_minus_end =
+                //     all_lines.take(file_part.total_lines - file_part.lines_to_drop);
+                let items_to_grab = line_range.size();
+                let pure_lines = messages
+                    .iter()
+                    .skip(file_part.lines_to_skip)
+                    .take(items_to_grab as usize);
+
                 let grabbed_elements = pure_lines
-                    .map(|s| GrabbedElement {
-                        source_id: self.source_id.clone(),
-                        content: s.to_owned(),
+                    .map(|s| {
+                        let fmt_msg = FormattableMessage {
+                            message: s.clone(), //FIXME avoid clone
+                            fibex_metadata: None,
+                        };
+                        GrabbedElement {
+                            source_id: self.source_id.clone(),
+                            content: format!("{}", fmt_msg),
+                        }
                     })
                     .collect::<Vec<GrabbedElement>>();
                 Ok(GrabbedContent { grabbed_elements })

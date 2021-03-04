@@ -186,9 +186,9 @@ impl fmt::Display for LogLevel {
         }
     }
 }
-pub(crate) struct FormattableMessage<'a> {
-    pub(crate) message: Message,
-    pub(crate) fibex_metadata: Option<&'a FibexMetadata>,
+pub struct FormattableMessage<'a> {
+    pub message: Message,
+    pub fibex_metadata: Option<&'a FibexMetadata>,
 }
 
 impl<'a> fmt::Display for FormattableMessage<'a> {

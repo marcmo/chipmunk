@@ -160,7 +160,7 @@ impl<R> FileMessageProducer<R>
 where
     R: Read + Seek + Unpin,
 {
-    fn new(
+    pub fn new(
         // in_path: &PathBuf,
         input: R,
         filter_config: Option<filtering::ProcessedDltFilterConfig>,

@@ -35,7 +35,6 @@ use indexer_base::{
 use indicatif::{ProgressBar, ProgressStyle};
 use merging::merger::merge_files_use_config_file;
 use processor::grabber::Grabber;
-use processor::search::count_pattern_in_binary;
 use tokio::sync;
 
 lazy_static! {
@@ -607,15 +606,23 @@ pub async fn main() -> Result<()> {
                 let start_op = Instant::now();
                 let start_index = if start > 0 { start - 1 } else { start };
                 let r = LineRange::from(start_index..=(start_index + length - 1));
-                let res = grabber.get_entries(&r);
+                let extension = input_p
+                    .extension()
+                    .expect("Could not get extension of file");
+                let res = if extension == "dlt" {
+                    grabber.get_dlt_entries(&r)
+                } else {
+                    grabber.get_entries(&r)
+                };
 
                 match res {
                     Ok(v) => {
                         duration_report(start_op, format!("grabbing {} lines", length));
                         let mut i = start_index;
+                        let cap_after = 150;
                         for (cnt, s) in v.grabbed_elements.iter().enumerate() {
-                            if s.content.len() > 50 {
-                                println!("[{}]--> {}", i + 1, &s.content[..50]);
+                            if s.content.len() > cap_after {
+                                println!("[{}]--> {}", i + 1, &s.content[..cap_after]);
                             } else {
                                 println!("[{}]--> {}", i + 1, &s.content);
                             }
