@@ -27,6 +27,8 @@ pub enum GrabError {
     IoOperation(#[from] std::io::Error),
     #[error("Invalid range: ({0:?})")]
     InvalidRange(LineRange),
+    #[error("Fail to correctly process chunk")]
+    Processing,
     #[error("Grabber interrupted")]
     Interrupted,
     #[error("Metadata initialization not done")]
@@ -425,7 +427,7 @@ impl Grabber {
             buffer = Vec::new();                        // Note:
             buffer.resize(DEFAULT_SLOT_SIZE, 0);        // vec![0; DEFAULT_SLOT_SIZE]; works slower on linux
             // Get list of all inlets in chunk
-            let (nl, offset) = get_inlets_plaint_text(&rest);
+            let (nl, offset) = get_inlets_plaint_text(&rest)?;
             if nl == 0 && read_bytes > 0 {
                 continue;
             }
@@ -740,13 +742,13 @@ fn subtract_what_is_possible(n: u64, m: u64) -> u64 {
     "inlet" - point of entry's end.
     TODO: probably it should be switched to BEGIN, but not END
 */
-fn get_inlets_plaint_text(buffer: &[u8]) -> (u64, usize) {
+fn get_inlets_plaint_text(buffer: &[u8]) -> Result<(u64, usize), GrabError> {
     let nl_count = bytecount::count(&buffer, b'\n') as u64;
     if nl_count == 0 {
-        (0, 0)
+        Ok((0, 0))
     } else if let Some(offset) = buffer.iter().rposition(|&byte| (&byte == &b'\n' || &byte == &b'\r')) {
-        (nl_count, offset)
+        Ok((nl_count, offset))
     } else {
-        panic!("Oops");
+        Err(GrabError::Processing)
     }
 }
