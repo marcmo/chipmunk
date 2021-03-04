@@ -422,8 +422,10 @@ impl Grabber {
             // Create actual buffer including rest part of previous iteration
             rest.append(&mut buffer);
             // Restore buffer to continue reading
-            buffer = Vec::new();                        // Note:
-            buffer.resize(DEFAULT_SLOT_SIZE, 0);        // vec![0; DEFAULT_SLOT_SIZE]; works slower on linux
+            // Note: vec![0; DEFAULT_SLOT_SIZE]; is slower on linux
+            buffer = Vec::new();
+            buffer.resize(DEFAULT_SLOT_SIZE, 0);
+
             // Get list of all inlets in chunk
             let (nl, offset) = get_inlets_plaint_text(&rest);
             if nl == 0 && read_bytes > 0 {
@@ -432,15 +434,21 @@ impl Grabber {
             let (slot, offset) = if read_bytes > 0 {
                 // Take rest part of chunk (all after last inlet)
                 rest = rest[offset + 1..].to_vec();
-                (Slot {
-                    bytes: ByteRange::from(byte_index..=(byte_index + offset as u64)),
-                    lines: LineRange::from(line_index..=(line_index + nl) - 1),
-                }, offset)
+                (
+                    Slot {
+                        bytes: ByteRange::from(byte_index..=(byte_index + offset as u64)),
+                        lines: LineRange::from(line_index..=(line_index + nl) - 1),
+                    },
+                    offset,
+                )
             } else {
-                (Slot {
-                    bytes: ByteRange::from(byte_index..=(byte_index + rest.len() as u64) - 1),
-                    lines: LineRange::from(line_index..=(line_index + nl)),
-                }, 0)
+                (
+                    Slot {
+                        bytes: ByteRange::from(byte_index..=(byte_index + rest.len() as u64) - 1),
+                        lines: LineRange::from(line_index..=(line_index + nl)),
+                    },
+                    0,
+                )
             };
             // Save slot and update other parameters
             slots.push(slot);
@@ -544,12 +552,6 @@ impl Grabber {
                     }
                 }
 
-                // let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
-                // println!("skipping {} entries", file_part.lines_to_skip);
-
-                // let all_lines = s.split(|c| c == '\n' || c == '\r');
-                // let lines_minus_end =
-                //     all_lines.take(file_part.total_lines - file_part.lines_to_drop);
                 let items_to_grab = line_range.size();
                 let pure_lines = messages
                     .iter()
@@ -727,16 +729,8 @@ fn is_newline(item: u8) -> bool {
     item == b'\n'
 }
 
-fn subtract_what_is_possible(n: u64, m: u64) -> u64 {
-    if n >= m {
-        n - m
-    } else {
-        0
-    }
-}
-
 fn get_inlets_plaint_text(buffer: &[u8]) -> (u64, usize) {
-    if let Some(offset) = buffer.iter().rposition(|&byte| &byte == &b'\n') {
+    if let Some(offset) = buffer.iter().rposition(|&v| v == b'\n') {
         (bytecount::count(&buffer, b'\n') as u64, offset)
     } else {
         (0, 0)
