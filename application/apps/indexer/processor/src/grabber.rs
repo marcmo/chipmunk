@@ -27,8 +27,6 @@ pub enum GrabError {
     IoOperation(#[from] std::io::Error),
     #[error("Invalid range: ({0:?})")]
     InvalidRange(LineRange),
-    #[error("Fail to correctly process chunk")]
-    Processing,
     #[error("Grabber interrupted")]
     Interrupted,
     #[error("Metadata initialization not done")]
@@ -427,7 +425,7 @@ impl Grabber {
             buffer = Vec::new();                        // Note:
             buffer.resize(DEFAULT_SLOT_SIZE, 0);        // vec![0; DEFAULT_SLOT_SIZE]; works slower on linux
             // Get list of all inlets in chunk
-            let (nl, offset) = get_inlets_plaint_text(&rest)?;
+            let (nl, offset) = get_inlets_plaint_text(&rest);
             if nl == 0 && read_bytes > 0 {
                 continue;
             }
@@ -495,7 +493,7 @@ impl Grabber {
                 let s = unsafe { std::str::from_utf8_unchecked(&read_buf) };
                 println!("skipping {} entries", file_part.lines_to_skip);
 
-                let all_lines = s.split(|c| c == '\n' || c == '\r');
+                let all_lines = s.split(|c| c == '\n');
                 let lines_minus_end =
                     all_lines.take(file_part.total_lines - file_part.lines_to_drop);
                 let pure_lines = lines_minus_end.skip(file_part.lines_to_skip);
@@ -726,7 +724,7 @@ pub(crate) fn identify_start_slot(slots: &[Slot], line_index: u64) -> Option<(Sl
 }
 
 fn is_newline(item: u8) -> bool {
-    item == b'\n' || item == b'\r'
+    item == b'\n'
 }
 
 fn subtract_what_is_possible(n: u64, m: u64) -> u64 {
@@ -737,18 +735,10 @@ fn subtract_what_is_possible(n: u64, m: u64) -> u64 {
     }
 }
 
-/*
-    Should returns positions of all bytes, where new entity ends. It's called
-    "inlet" - point of entry's end.
-    TODO: probably it should be switched to BEGIN, but not END
-*/
-fn get_inlets_plaint_text(buffer: &[u8]) -> Result<(u64, usize), GrabError> {
-    let nl_count = bytecount::count(&buffer, b'\n') as u64;
-    if nl_count == 0 {
-        Ok((0, 0))
-    } else if let Some(offset) = buffer.iter().rposition(|&byte| (&byte == &b'\n' || &byte == &b'\r')) {
-        Ok((nl_count, offset))
+fn get_inlets_plaint_text(buffer: &[u8]) -> (u64, usize) {
+    if let Some(offset) = buffer.iter().rposition(|&byte| &byte == &b'\n') {
+        (bytecount::count(&buffer, b'\n') as u64, offset)
     } else {
-        Err(GrabError::Processing)
+        (0, 0)
     }
 }
